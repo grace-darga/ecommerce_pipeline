@@ -38,7 +38,7 @@ Couvre l'intégralité de la chaîne de transformation : de la donnée brute CSV
                          │  dbt run
                          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  MARTS — Tables (logique business)                                  │
+│  MARTS — Tables (logique  business)                                  │
 │                                                                     │
 │  dim_customers          dim_products         fct_orders             │
 │  ─ métriques RFM        ─ perf. commerciale  ─ table de faits       │
