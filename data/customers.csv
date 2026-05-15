@@ -1,0 +1,13 @@
+customer_id,first_name,last_name,email,country,created_at,segment
+1,Alice,Martin,alice.martin@email.com,France,2023-01-15,VIP
+2,Bob,Dupont,bob.dupont@email.com,Belgique,2023-02-20,Standard
+3,Clara,Leroy,clara.leroy@email.com,France,2023-03-05,Premium
+4,David,Bernard,david.bernard@email.com,Suisse,2023-04-10,Standard
+5,Emma,Petit,emma.petit@email.com,France,2023-05-22,VIP
+6,Fabrice,Moreau,fabrice.moreau@email.com,France,2023-06-01,Standard
+7,Gina,Simon,gina.simon@email.com,Belgique,2023-07-14,Premium
+8,Hugo,Laurent,hugo.laurent@email.com,France,2023-08-30,Standard
+9,Iris,Michel,iris.michel@email.com,Suisse,2023-09-12,VIP
+10,Jean,Lefebvre,jean.lefebvre@email.com,France,2023-10-05,Standard
+11,Karine,Garcia,karine.garcia@email.com,France,2023-11-18,Premium
+12,Luc,Martinez,luc.martinez@email.com,Belgique,2023-12-01,Standard

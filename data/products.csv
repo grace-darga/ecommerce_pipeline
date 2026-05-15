@@ -1,0 +1,13 @@
+product_id,product_name,category,unit_price,cost_price,supplier,is_active
+1,Laptop Pro 15,Informatique,1299.99,850.00,TechSupply,true
+2,Souris Ergonomique,Informatique,49.99,22.00,PeriphPlus,true
+3,Clavier Mécanique,Informatique,129.99,65.00,PeriphPlus,true
+4,Écran 27 pouces,Informatique,449.99,280.00,TechSupply,true
+5,Chaise de Bureau,Mobilier,349.99,180.00,ErgoFurniture,true
+6,Bureau Réglable,Mobilier,599.99,320.00,ErgoFurniture,true
+7,Casque Audio Pro,Accessoires,199.99,95.00,SoundTech,true
+8,Webcam HD,Accessoires,89.99,40.00,SoundTech,true
+9,Disque SSD 1TB,Stockage,119.99,65.00,DataStore,true
+10,Câble USB-C,Accessoires,19.99,5.00,PeriphPlus,true
+11,Hub USB 7 ports,Accessoires,39.99,18.00,PeriphPlus,true
+12,Tapis de Souris XL,Accessoires,29.99,10.00,PeriphPlus,false
