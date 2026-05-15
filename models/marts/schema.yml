@@ -1,0 +1,394 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: >
+      Dimension clients enrichie — table de référence centrale pour toutes les analyses
+      liées aux clients e-commerce. Combine les attributs statiques du client (identité,
+      segment, pays) avec des métriques comportementales calculées à partir de l'historique
+      de commandes : CA généré, panier moyen, nombre de commandes, produits uniques achetés.
+      Inclut une classification RFM simplifiée via value_tier pour segmenter les clients
+      par valeur business. Matérialisée en TABLE pour des performances optimales en lecture.
+      Les clients sans commande sont inclus avec des métriques à 0 (LEFT JOIN).
+
+    columns:
+      - name: customer_id
+        description: >
+          Clé primaire de la dimension client. Héritée de stg_customers.
+          Utilisée comme clé de jointure dans fct_orders.
+        tests:
+          - not_null
+          - unique
+
+      - name: full_name
+        description: >
+          Nom complet du client, concaténation de first_name || ' ' || last_name.
+          Calculé dans dim_customers pour éviter la répétition dans fct_orders.
+
+      - name: email
+        description: >
+          Email unique du client en minuscules. Peut servir d'identifiant alternatif
+          pour les jointures avec des outils CRM externes (Mailchimp, HubSpot).
+        tests:
+          - not_null
+          - unique
+
+      - name: country
+        description: Pays de résidence du client (France, Belgique, Suisse).
+
+      - name: segment
+        description: >
+          Segment marketing en majuscules : VIP, PREMIUM, STANDARD.
+          Défini par l'équipe CRM dans la source — non calculé par dbt.
+
+      - name: created_at
+        description: Date d'inscription du client sur la plateforme.
+
+      - name: total_orders
+        description: >
+          Nombre total de commandes passées par le client, annulations exclues.
+          Calculé via COUNT(order_id) WHERE status != 'cancelled'.
+          Vaut 0 pour les clients sans commande.
+        tests:
+          - not_null
+
+      - name: total_revenue
+        description: >
+          Chiffre d'affaires net total généré par le client depuis son inscription, en euros.
+          Somme des net_amount de toutes ses commandes non annulées.
+          Indicateur principal pour le classement value_tier.
+          Vaut 0 pour les clients sans commande.
+        tests:
+          - not_null
+
+      - name: avg_order_value
+        description: >
+          Panier moyen du client en euros : total_revenue / total_orders.
+          Vaut 0 pour les clients sans commande (pas de division par zéro grâce au COALESCE).
+
+      - name: first_order_date
+        description: Date de la toute première commande du client. NULL si aucune commande.
+
+      - name: last_order_date
+        description: >
+          Date de la commande la plus récente. NULL si aucune commande.
+          Peut être utilisée pour calculer le RFM Recency : current_date - last_order_date.
+
+      - name: unique_products_bought
+        description: >
+          Nombre de produits distincts commandés par le client (hors annulations).
+          Indicateur de diversité d'achats — un client avec un score élevé est moins
+          dépendant d'un seul produit.
+
+      - name: total_discount_received
+        description: >
+          Cumul des remises accordées au client en euros.
+          Utile pour identifier les clients qui achètent uniquement en promotion.
+
+      - name: value_tier
+        description: >
+          Classification RFM simplifiée basée sur le total_revenue :
+          'High Value'  → total_revenue >= 2000 € (clients VIP business)
+          'Mid Value'   → total_revenue entre 500 € et 1999 €
+          'Low Value'   → total_revenue < 500 € (clients occasionnels)
+          Cette segmentation alimente les stratégies de rétention et de fidélisation.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['High Value', 'Mid Value', 'Low Value']
+
+      - name: days_since_signup
+        description: >
+          Ancienneté du client en jours, calculée à chaque run du pipeline :
+          date_diff('day', created_at, current_date).
+          Varie à chaque exécution — indicateur de maturité de la relation client.
+
+
+  - name: dim_products
+    description: >
+      Dimension produits enrichie — référentiel complet du catalogue e-commerce
+      avec métriques de performance commerciale. Agrège les données de ventes
+      (commandes non annulées) pour calculer : unités vendues, CA généré, clients
+      touchés, remises accordées. Calcule le profit estimé (unités × marge brute)
+      et classifie chaque produit selon sa popularité (popularity_tier).
+      Les produits sans vente sont inclus avec des métriques à 0 (LEFT JOIN).
+      Matérialisée en TABLE — source de vérité pour les analyses catalogue.
+
+    columns:
+      - name: product_id
+        description: Clé primaire de la dimension produit. Héritée de stg_products.
+        tests:
+          - not_null
+          - unique
+
+      - name: product_name
+        description: Nom commercial du produit.
+
+      - name: category
+        description: Catégorie du produit (Informatique, Mobilier, Accessoires, Stockage).
+
+      - name: supplier
+        description: Fournisseur du produit.
+
+      - name: unit_price
+        description: Prix de vente public HT en euros.
+
+      - name: cost_price
+        description: >
+          Prix de revient fournisseur en euros.
+          Donnée sensible — à protéger via des row-level security en environnement production.
+
+      - name: gross_margin
+        description: >
+          Marge brute unitaire en euros : unit_price - cost_price.
+          Héritée directement de stg_products (calculée dès le staging).
+
+      - name: margin_pct
+        description: >
+          Taux de marge brute en % : (unit_price - cost_price) / unit_price * 100.
+          Héritée de stg_products. Référence pour prioriser les produits à promouvoir.
+        tests:
+          - not_null
+
+      - name: is_active
+        description: >
+          true = produit disponible à la vente.
+          false = produit archivé. Les analyses de performance incluent les deux
+          pour ne pas perdre l'historique de ventes des produits discontinués.
+
+      - name: total_orders
+        description: Nombre de commandes contenant ce produit (hors annulations).
+
+      - name: total_units_sold
+        description: >
+          Total d'unités vendues toutes commandes confondues (hors annulations).
+          Tient compte de la quantité par commande : SUM(quantity).
+
+      - name: total_revenue
+        description: >
+          CA net total généré par ce produit en euros : SUM(net_amount) hors annulations.
+          Indicateur principal pour le classement des produits les plus rentables.
+
+      - name: total_gross_revenue
+        description: "CA brut total avant remises : SUM(gross_amount) hors annulations."
+
+      - name: total_discount_given
+        description: >
+          Total des remises accordées sur ce produit en euros.
+          Un montant élevé peut indiquer une politique tarifaire trop agressive.
+
+      - name: avg_discount_pct
+        description: Taux de remise moyen observé sur ce produit en %.
+
+      - name: unique_customers
+        description: Nombre de clients distincts ayant acheté ce produit (hors annulations).
+
+      - name: estimated_profit
+        description: >
+          Profit estimé total : total_units_sold * gross_margin.
+          Approximation — ne tient pas compte des frais fixes ni des remises sur coût.
+          Formule : round(total_units_sold * gross_margin, 2)
+
+      - name: popularity_tier
+        description: >
+          Classification de popularité basée sur total_units_sold :
+          'Bestseller'  → >= 5 unités vendues (produit phare)
+          'Normal'      → 2 à 4 unités vendues
+          'Slow Mover'  → 1 unité vendue (faible rotation)
+          'No Sales'    → 0 vente (jamais commandé ou archivé)
+          Utilisé pour prioriser les actions merchandising et réassort.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Bestseller', 'Normal', 'Slow Mover', 'No Sales']
+
+
+  - name: fct_orders
+    description: >
+      Table de faits centrale du modèle dimensionnel — grain : une ligne par commande.
+      Dénormalise les attributs clés des dimensions client et produit directement
+      dans la table de faits pour éviter les jointures coûteuses à la lecture.
+      Contient toutes les commandes (y compris annulées) avec le flag is_cancelled
+      pour filtrer selon le besoin analytique. C'est le point d'entrée principal
+      pour les analyses transactionnelles : CA par segment, par pays, par catégorie,
+      par moyen de paiement, par période. Matérialisée en TABLE.
+
+    columns:
+      - name: order_id
+        description: >
+          Clé primaire de la table de faits. Identifiant unique de la commande.
+          Héritée de stg_orders.
+        tests:
+          - not_null
+          - unique
+
+      - name: customer_id
+        description: >
+          Clé étrangère vers dim_customers. Permet de remonter à tous les attributs
+          client non dénormalisés dans cette table.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+
+      - name: product_id
+        description: >
+          Clé étrangère vers dim_products. Permet de remonter aux attributs produit
+          non dénormalisés (ex : cost_price, supplier).
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_id
+
+      - name: order_date
+        description: Date de la commande. Axe temporel principal pour les analyses chronologiques.
+
+      - name: order_year
+        description: Année de la commande. Facilite les GROUP BY sans recalculer date_part().
+
+      - name: order_month
+        description: Mois de la commande (1-12).
+
+      - name: order_quarter
+        description: Trimestre de la commande (1-4).
+
+      - name: customer_name
+        description: Nom complet du client, dénormalisé depuis dim_customers.full_name.
+
+      - name: customer_country
+        description: Pays du client, dénormalisé pour les analyses géographiques sans jointure.
+
+      - name: customer_segment
+        description: Segment du client (VIP/PREMIUM/STANDARD), dénormalisé pour filtres rapides.
+
+      - name: customer_value_tier
+        description: >
+          Tier RFM du client au moment du run (High/Mid/Low Value), dénormalisé.
+          Attention : cette valeur est recalculée à chaque run — elle peut évoluer
+          si le comportement d'achat du client change entre deux exécutions.
+
+      - name: product_name
+        description: Nom du produit commandé, dénormalisé depuis dim_products.
+
+      - name: product_category
+        description: Catégorie du produit, dénormalisée pour les analyses par famille de produit.
+
+      - name: supplier
+        description: Fournisseur du produit commandé.
+
+      - name: quantity
+        description: Nombre d'unités commandées.
+
+      - name: unit_price
+        description: Prix unitaire facturé (peut différer du prix catalogue actuel).
+
+      - name: discount_pct
+        description: Taux de remise appliqué en %.
+
+      - name: gross_amount
+        description: Montant brut avant remise en euros.
+
+      - name: discount_amount
+        description: Valeur de la remise accordée en euros.
+
+      - name: net_amount
+        description: >
+          Montant net facturé après remise en euros. Métrique financière de référence.
+          Toujours >= 0 (vérifié par le test custom assert_positive_net_amount).
+        tests:
+          - not_null
+
+      - name: estimated_profit
+        description: >
+          Profit estimé sur cette commande : quantity * (unit_price - cost_price) * (1 - discount_pct/100).
+          Approximation basée sur le coût produit — ne tient pas compte des frais logistiques.
+
+      - name: status
+        description: >
+          Statut de la commande : delivered, shipped, cancelled, pending.
+          Toutes les commandes sont conservées dans fct_orders.
+          Filtrer WHERE NOT is_cancelled pour les analyses de CA réel.
+        tests:
+          - accepted_values:
+              values: ['delivered', 'shipped', 'cancelled', 'pending']
+
+      - name: payment_method
+        description: "Moyen de paiement utilisé : carte, paypal, virement."
+
+      - name: is_cancelled
+        description: >
+          Booléen de commodité : true si status = 'cancelled'.
+          Utiliser ce flag plutôt que de réécrire la condition WHERE à chaque requête.
+
+
+  - name: monthly_revenue
+    description: >
+      Rapport agrégé mensuel — grain : un mois calendaire par ligne.
+      Consolide les métriques clés de performance e-commerce par mois :
+      volume de commandes, CA brut et net, remises accordées, profit estimé,
+      clients actifs uniques, panier moyen et taux d'annulation.
+      Ce modèle est la source principale pour les dashboards de pilotage mensuel
+      et les comparaisons MoM (month-over-month). Les commandes annulées sont
+      comptabilisées séparément pour mesurer la performance réelle vs brute.
+      Matérialisé en TABLE, trié chronologiquement.
+
+    columns:
+      - name: month_label
+        description: >
+          Identifiant lisible du mois au format YYYY-MM (ex: '2024-01').
+          Construit via cast(order_year as varchar) || '-' || lpad(order_month, 2, '0').
+          Clé primaire fonctionnelle de cette table agrégée.
+        tests:
+          - not_null
+          - unique
+
+      - name: order_year
+        description: "Année du mois (ex : 2024). Permet des filtres et GROUP BY annuels."
+
+      - name: order_month
+        description: Numéro du mois (1-12). Combiné avec order_year pour les tris chronologiques.
+
+      - name: total_orders
+        description: Nombre total de commandes sur le mois, annulations incluses.
+
+      - name: completed_orders
+        description: Commandes livrées ou en cours (statut != cancelled). Base du CA réel.
+
+      - name: cancelled_orders
+        description: Commandes annulées sur le mois. Surveiller une hausse anormale.
+
+      - name: active_customers
+        description: >
+          Nombre de clients distincts ayant commandé dans le mois (hors annulations).
+          Indicateur d'engagement mensuel de la base clients.
+
+      - name: gross_revenue
+        description: CA brut mensuel en euros, avant remises, hors annulations.
+
+      - name: total_discounts
+        description: >
+          Total des remises accordées sur le mois en euros.
+          Comparer à gross_revenue pour mesurer la pression promotionnelle.
+
+      - name: net_revenue
+        description: >
+          CA net mensuel en euros, après remises, hors annulations.
+          Métrique de référence pour le suivi de la performance commerciale.
+          Toujours >= 0 (vérifié par le test custom assert_monthly_revenue_positive).
+        tests:
+          - not_null
+
+      - name: estimated_profit
+        description: Profit estimé mensuel en euros. Somme des estimated_profit de fct_orders.
+
+      - name: avg_order_value
+        description: >
+          Panier moyen mensuel : net_revenue / completed_orders.
+          NULL si aucune commande complétée (protection contre division par zéro via NULLIF).
+
+      - name: cancellation_rate_pct
+        description: >
+          Taux d'annulation mensuel en % : cancelled_orders / total_orders * 100.
+          Un taux > 10% doit déclencher une investigation (qualité produit, délais livraison).
