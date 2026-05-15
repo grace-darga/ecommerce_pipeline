@@ -1,8 +1,31 @@
+# Environnement virtuel
+venv/
+dbt_venv/
+env/
+.env
+
+# dbt generated files
 target/
 dbt_packages/
 logs/
+
+# Base de données locale
 *.duckdb
-.env
+*.db
+
+# Python
 __pycache__/
 *.pyc
-venv/ 
+*.pyo
+*.pyd
+
+# Credentials
+profiles.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
