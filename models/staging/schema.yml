@@ -1,0 +1,244 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: >
+      Couche de staging pour les clients e-commerce.
+      Nettoie et normalise les données brutes du fichier source customers.csv :
+      mise en minuscules des emails, normalisation du segment en majuscules,
+      cast des types, ajout d'un timestamp de chargement pipeline (_loaded_at).
+      Ce modèle est matérialisé en VIEW car il ne fait aucun calcul lourd —
+      il sert uniquement de contrat de données propre pour les modèles marts en aval.
+
+    columns:
+      - name: customer_id
+        description: >
+          Identifiant unique du client, clé primaire de la table.
+          Castée en INTEGER depuis la source CSV. Utilisée comme clé de jointure
+          dans stg_orders et dim_customers.
+        tests:
+          - not_null
+          - unique
+
+      - name: email
+        description: >
+          Adresse email du client, normalisée en minuscules (lower + trim).
+          Doit être unique dans toute la base — utilisée comme identifiant
+          alternatif pour les réconciliations CRM.
+        tests:
+          - not_null
+          - unique
+
+      - name: first_name
+        description: Prénom du client, nettoyé avec trim() pour supprimer les espaces parasites.
+
+      - name: last_name
+        description: Nom de famille du client, nettoyé avec trim().
+
+      - name: country
+        description: >
+          Pays de résidence du client (France, Belgique, Suisse).
+          Non normalisé en code ISO — utilisé tel quel depuis la source.
+          À normaliser en ISO 3166-1 dans une future version.
+        tests:
+          - not_null
+
+      - name: segment
+        description: >
+          Segment marketing du client, normalisé en MAJUSCULES.
+          Valeurs acceptées : VIP (meilleurs clients, programme fidélité premium),
+          PREMIUM (clients réguliers à fort panier), STANDARD (clients occasionnels).
+          Alimenté manuellement par l'équipe CRM dans le fichier source.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['VIP', 'PREMIUM', 'STANDARD']
+
+      - name: created_at
+        description: >
+          Date d'inscription du client sur la plateforme, castée en DATE.
+          Utilisée dans dim_customers pour calculer l'ancienneté (days_since_signup).
+
+      - name: _loaded_at
+        description: >
+          Timestamp technique ajouté par le pipeline dbt au moment de l'exécution.
+          Permet de tracer la fraîcheur des données dans chaque run.
+          Ne provient pas de la source — généré via current_timestamp.
+
+
+  - name: stg_products
+    description: >
+      Couche de staging pour le catalogue produits.
+      Nettoie les données brutes de products.csv et enrichit avec deux métriques
+      financières calculées dès le staging : gross_margin (marge brute en €) et
+      margin_pct (taux de marge en %). Ces calculs sont faits ici — et non dans les marts —
+      car ils dépendent uniquement des attributs produit et non du comportement commercial.
+
+    columns:
+      - name: product_id
+        description: >
+          Identifiant unique du produit, clé primaire de la table.
+          Castée en INTEGER depuis la source CSV.
+        tests:
+          - not_null
+          - unique
+
+      - name: product_name
+        description: Nom commercial du produit, nettoyé avec trim().
+
+      - name: category
+        description: >
+          Catégorie de classification du produit.
+          Valeurs acceptées : Informatique (PC, périphériques, stockage),
+          Mobilier (bureaux, chaises), Accessoires (câbles, hubs, casques),
+          Stockage (SSD, disques durs).
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Informatique', 'Mobilier', 'Accessoires', 'Stockage']
+
+      - name: supplier
+        description: Nom du fournisseur. Non vérifié contre un référentiel — libre saisie.
+
+      - name: unit_price
+        description: >
+          Prix de vente public HT en euros, castée en DECIMAL(10,2).
+          C'est le prix affiché au client avant toute remise commerciale.
+        tests:
+          - not_null
+
+      - name: cost_price
+        description: >
+          Prix de revient du produit (coût d'achat fournisseur) en euros, castée en DECIMAL(10,2).
+          Donnée confidentielle — ne doit pas être exposée dans des rapports clients.
+        tests:
+          - not_null
+
+      - name: gross_margin
+        description: >
+          Marge brute unitaire calculée en staging : unit_price - cost_price, arrondie à 2 décimales.
+          Représente le gain brut par unité vendue avant frais fixes.
+          Formule : round(unit_price - cost_price, 2)
+
+      - name: margin_pct
+        description: >
+          Taux de marge brute en pourcentage, calculé en staging.
+          Formule : round((unit_price - cost_price) / unit_price * 100, 2)
+          Un taux > 40% indique un produit à forte valeur ajoutée.
+
+      - name: is_active
+        description: >
+          Indicateur booléen de disponibilité produit.
+          false = produit archivé, ne doit plus apparaître dans les nouvelles commandes.
+          Les modèles marts filtrent optionnellement sur is_active = true.
+
+      - name: _loaded_at
+        description: Timestamp d'exécution du pipeline dbt. Voir stg_customers._loaded_at.
+
+
+  - name: stg_orders
+    description: >
+      Couche de staging pour les commandes e-commerce.
+      Nettoie les données brutes de orders.csv et calcule trois montants financiers
+      clés pour chaque ligne de commande : gross_amount (avant remise), discount_amount
+      (valeur de la remise), et net_amount (montant effectivement facturé).
+      Enrichit également les dates avec des colonnes analytiques (année, mois, trimestre)
+      pour faciliter les agrégations temporelles dans les marts.
+      Matérialisé en VIEW — pas de stockage intermédiaire nécessaire.
+
+    columns:
+      - name: order_id
+        description: >
+          Identifiant unique de la commande, clé primaire de la table.
+          Castée en INTEGER depuis la source CSV.
+        tests:
+          - not_null
+          - unique
+
+      - name: customer_id
+        description: >
+          Clé étrangère vers stg_customers.customer_id.
+          Chaque commande appartient à exactement un client.
+          Un test relationships vérifie l'intégrité référentielle.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+
+      - name: product_id
+        description: >
+          Clé étrangère vers stg_products.product_id.
+          Une commande porte sur exactement un produit (modèle simplifié — pas de panier multi-lignes).
+          Un test relationships vérifie l'intégrité référentielle.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_products')
+              field: product_id
+
+      - name: quantity
+        description: >
+          Nombre d'unités commandées, castée en INTEGER.
+          Toujours >= 1 dans les données actuelles.
+
+      - name: unit_price
+        description: >
+          Prix unitaire facturé au moment de la commande, castée en DECIMAL(10,2).
+          Peut différer du stg_products.unit_price si le prix a évolué depuis.
+
+      - name: discount_pct
+        description: >
+          Pourcentage de remise appliqué à cette commande, castée en DECIMAL(5,2).
+          Valeur entre 0 et 100. 0 = pas de remise. Exemple : 10 = remise de 10%.
+
+      - name: gross_amount
+        description: >
+          Montant brut de la commande avant remise, en euros.
+          Formule : round(quantity * unit_price, 2)
+
+      - name: discount_amount
+        description: >
+          Valeur monétaire de la remise accordée, en euros.
+          Formule : round(quantity * unit_price * discount_pct / 100, 2)
+
+      - name: net_amount
+        description: >
+          Montant net effectivement facturé au client après remise, en euros.
+          C'est la valeur de référence pour tous les calculs de CA dans les marts.
+          Formule : round(quantity * unit_price * (1 - discount_pct / 100), 2)
+          Les commandes annulées ont un net_amount calculé mais sont exclues
+          des agrégations business via un filtre WHERE status != 'cancelled'.
+        tests:
+          - not_null
+
+      - name: status
+        description: >
+          Statut courant de la commande. Cycle de vie typique : pending → shipped → delivered.
+          cancelled = commande annulée avant expédition ou après retour.
+          Les statuts cancelled sont conservés dans la table mais filtrés dans les agrégations.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['delivered', 'shipped', 'cancelled', 'pending']
+
+      - name: payment_method
+        description: >
+          Moyen de paiement utilisé par le client.
+          Valeurs observées : carte (carte bancaire), paypal, virement.
+          Normalisé en minuscules.
+
+      - name: order_date
+        description: Date de passage de la commande, castée en DATE.
+
+      - name: order_year
+        description: Année de la commande, extrait de order_date via date_part(). Facilite les GROUP BY annuels.
+
+      - name: order_month
+        description: Mois de la commande (1-12), extrait de order_date. Facilite les GROUP BY mensuels.
+
+      - name: order_quarter
+        description: Trimestre de la commande (1-4), extrait de order_date. Facilite les analyses trimestrielles.
+
+      - name: _loaded_at
+        description: Timestamp d'exécution du pipeline dbt. Voir stg_customers._loaded_at.
